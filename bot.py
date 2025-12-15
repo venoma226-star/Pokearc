@@ -56,6 +56,13 @@ def is_poketwo(msg):
 def is_admin(member):
     return any(r.name in ADMIN_ROLE_NAMES for r in member.roles)
 
+# Track last activity for auto-dex
+last_active = defaultdict(lambda: None)
+
+# User collections
+user_collection = defaultdict(set)
+user_shinies = defaultdict(set)
+
 # =========================
 # PART 2 — SPAWNS
 # =========================
@@ -76,7 +83,6 @@ async def on_message(message):
     if message.embeds:
         embed = message.embeds[0]
         title = (embed.title or "").lower()
-
         if "a wild pokémon has appeared" in title:
             active_spawns[message.channel.id] = ist_now()
             try:
@@ -101,17 +107,6 @@ spawn_cleanup.start()
 # PART 3 — DEX
 # =========================
 
-user_collection = defaultdict(set)
-user_shinies = defaultdict(set)
-
-@bot.command()
-async def addpokemon(ctx, *, name):
-    n = name.lower().strip()
-    user_collection[ctx.author.id].add(n)
-    if "shiny" in n:
-        user_shinies[ctx.author.id].add(n)
-    await ctx.reply(f"✅ Added **{name}**")
-
 @bot.command()
 async def mydex(ctx):
     total = len(user_collection[ctx.author.id])
@@ -123,7 +118,7 @@ async def mydex(ctx):
     )
 
 # =========================
-# PART 4 — MARKET
+# PART 4 — MARKET / TRADE
 # =========================
 
 user_shops = defaultdict(list)
@@ -155,8 +150,9 @@ async def checktrade(ctx, give: float, take: float):
         await ctx.reply(f"✅ Fair trade ({ratio:.2f})")
     else:
         await ctx.reply(f"⚠️ Unfair trade ({ratio:.2f})")
+
 # =========================
-# PART 4.5 — P2 ASSISTANT (FINAL)
+# PART 4.5 — P2 ASSISTANT++
 # Auto Dex + Shop Index + Filters
 # =========================
 
@@ -164,10 +160,16 @@ import re
 
 # ---------- SHOP INDEX ----------
 shop_index = defaultdict(list)
-
 PRICE_REGEX = re.compile(r"(\d{1,9})")
 
-# ---------- AUTO DEX ----------
+LEGENDARY_KEYWORDS = {
+    "entei", "suicune", "raikou",
+    "mewtwo", "lugia", "ho-oh",
+    "rayquaza", "dialga", "palkia",
+    "giratina", "kyogre", "groudon"
+}
+
+# ---------- AUTO DEX LISTENER ----------
 @bot.event
 async def auto_dex_listener(message):
     if not is_poketwo(message):
@@ -183,10 +185,8 @@ async def auto_dex_listener(message):
             if t.isalpha() and len(t) > 3:
                 pokemon = t
                 user_collection[user.id].add(pokemon)
-
                 if "shiny" in content:
                     user_shinies[user.id].add(pokemon)
-
                 last_active[user.id] = ist_now()
                 break
 
@@ -195,16 +195,13 @@ async def auto_dex_listener(message):
 async def shop_index_listener(message):
     if not is_poketwo(message):
         return
-
     if not message.embeds:
         return
 
     embed = message.embeds[0]
     title = (embed.title or "").lower()
-
     if "shop" not in title:
         return
-
     if not message.reference or not message.reference.resolved:
         return
 
@@ -213,16 +210,13 @@ async def shop_index_listener(message):
 
     for line in lines:
         clean = line.lower()
-
         price_match = PRICE_REGEX.search(clean)
         if not price_match:
             continue
-
         price = int(price_match.group(1))
         shiny = "shiny" in clean
         gmax = "gmax" in clean or "gigantamax" in clean
-
-        words = clean.replace("⭐", "").replace("—", " ").split()
+        words = clean.replace("⭐","").replace("—"," ").split()
         for w in words:
             if w.isalpha() and len(w) > 3:
                 shop_index[w].append({
@@ -237,9 +231,22 @@ async def shop_index_listener(message):
                 })
                 break
 
-# =========================
-# SEARCH COMMANDS
-# =========================
+# ---------- SEARCH COMMANDS ----------
+async def send_results(ctx, title, results):
+    msg = f"🛒 **{title.upper()} — Listings**\n\n"
+    for r in sorted(results, key=lambda x: x["price"])[:10]:
+        flags = []
+        if r["shiny"]:
+            flags.append("✨ Shiny")
+        if r["gmax"]:
+            flags.append("💠 G-Max")
+        flag_txt = f" ({', '.join(flags)})" if flags else ""
+        msg += (
+            f"• `{r['price']}` coins{flag_txt}\n"
+            f"  Seller: `{r['seller_name']}`\n"
+            f"  Channel: <#{r['channel_id']}>\n\n"
+        )
+    await ctx.reply(msg[:2000])
 
 @bot.command(name="--n")
 async def search_name(ctx, *, pokemon: str):
@@ -273,27 +280,6 @@ async def search_price(ctx, max_price: int, *, pokemon: str):
         return await ctx.reply(f"❌ No **{pokemon}** under `{max_price}`.")
     await send_results(ctx, f"{name} ≤ {max_price}", results)
 
-# ---------- RESULT FORMATTER ----------
-async def send_results(ctx, title, results):
-    msg = f"🛒 **{title.upper()} — Listings**\n\n"
-
-    for r in sorted(results, key=lambda x: x["price"])[:10]:
-        flags = []
-        if r["shiny"]:
-            flags.append("✨ Shiny")
-        if r["gmax"]:
-            flags.append("💠 G-Max")
-
-        flag_txt = f" ({', '.join(flags)})" if flags else ""
-
-        msg += (
-            f"• `{r['price']}` coins{flag_txt}\n"
-            f"  Seller: `{r['seller_name']}`\n"
-            f"  Channel: <#{r['channel_id']}>\n\n"
-        )
-
-    await ctx.reply(msg[:2000])
-
 # =========================
 # PART 5 — REMINDERS
 # =========================
@@ -326,10 +312,8 @@ async def before_reminders():
 
 reminder_loop.start()
 
-
 # =========================
-# HELP SYSTEM (FULL)
-# Paste BEFORE the run section
+# PART 5.5 — HELP
 # =========================
 
 HELP_TEXT = f"""
@@ -353,69 +337,39 @@ Slash: `/ping`
 • Automatically detects Pokétwo spawns
 • Shows spawn alert in channel
 • Uses IST-based timing
-• 100% ToS-safe (no guessing / no automation)
+• 100% ToS-safe
 
 ━━━━━━━━━━━━━━━━━━
 📘 DEX & COLLECTION
 ━━━━━━━━━━━━━━━━━━
-`F!addpokemon <name>`
-→ Manually add a Pokémon you caught  
-Example:
-`F!addpokemon shiny rayquaza`
-
 `F!mydex`
 → Shows your dex stats (total / shiny)
 
 ━━━━━━━━━━━━━━━━━━
-🛒 SHOP & MARKET (IMPORTANT)
+🛒 SHOP & MARKET
 ━━━━━━━━━━━━━━━━━━
-⚠️ This bot does NOT run Pokétwo commands for you.
-
-How it works:
-1️⃣ You run Pokétwo shop command (e.g. `p!shop`)
-2️⃣ Pokétwo sends an embed
-3️⃣ Our bot reads & saves that embed safely
-
-Commands:
 `F!shopsummary`
-→ Shows summary of your last detected shop
+→ Show last detected shop
 
-━━━━━━━━━━━━━━━━━━
-💹 TRADE ASSISTANT
-━━━━━━━━━━━━━━━━━━
 `F!checktrade <you_give> <you_get>`
+→ Fairness check
 
-Example:
-`F!checktrade 8000 10000`
+`F!--n <pokemon>`
+→ Search Pokémon
 
-• Uses ratio-based fairness check
-• Warns about bad trades
-• Does NOT interfere with Pokétwo trades
+`F!--shiny <pokemon>`
+→ Shiny-only search
+
+`F!--gmax <pokemon>`
+→ Gigantamax-only search
+
+`F!--p <max_price> <pokemon>`
+→ Price filter
 
 ━━━━━━━━━━━━━━━━━━
 ⏰ REMINDERS (ADMIN ONLY)
 ━━━━━━━━━━━━━━━━━━
 `F!setreminder HH:MM`
-→ Set server-wide reminder (IST)
-
-Example:
-`F!setreminder 21:30`
-
-━━━━━━━━━━━━━━━━━━
-🛡️ SAFETY & LIMITS
-━━━━━━━━━━━━━━━━━━
-✅ Fully Pokétwo ToS-safe  
-❌ No coin manipulation  
-❌ No auto-catching  
-❌ No Pokétwo command spoofing  
-
-━━━━━━━━━━━━━━━━━━
-🚀 BUILT FOR BIG SERVERS
-━━━━━━━━━━━━━━━━━━
-• Memory cleanup loops
-• Lightweight listeners
-• No blocking tasks
-• Flask uptime support
 
 ━━━━━━━━━━━━━━━━━━
 """
@@ -429,10 +383,7 @@ async def help_cmd(ctx):
     description="Show full Pokétwo Companion Bot guide"
 )
 async def slash_help(interaction: nextcord.Interaction):
-    await interaction.response.send_message(
-        HELP_TEXT,
-        ephemeral=True
-    )
+    await interaction.response.send_message(HELP_TEXT, ephemeral=True)
 
 # =========================
 # PART 6 — STATS + RUN
@@ -449,18 +400,6 @@ async def slash_ping(i: nextcord.Interaction):
     await i.response.send_message(
         f"🏓 Pong `{round(bot.latency*1000)}ms`",
         ephemeral=True
-    )
-
-@bot.command()
-async def help(ctx):
-    await ctx.reply(
-        "**Pokétwo Companion Bot**\n"
-        "`F!ping` / `/ping`\n"
-        "`F!addpokemon`\n"
-        "`F!mydex`\n"
-        "`F!shopsummary`\n"
-        "`F!checktrade`\n"
-        "`F!setreminder`"
     )
 
 if __name__ == "__main__":
